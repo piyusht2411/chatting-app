@@ -1,7 +1,8 @@
 "use client";
-import PassInput from "@/components/inputs/PassInput";
-import TextInput from "@/components/inputs/TextInput";
-import { supabase } from "@/lib/supabaseClient";
+
+import PassInput from "../../components/inputs/PassInput";
+import TextInput from "../../components/inputs/TextInput";
+import { supabase } from "../../lib/supabaseClient";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -20,17 +21,19 @@ export default function Page() {
       phone: number,
     });
 
-    if (!error) {
+    if (!error && data.user) {
       const { error: profileError } = await supabase
         .from("profiles")
-        .insert([{ id: data.user?.id, email, phone: number, name }]);
+        .insert([{ id: data.user.id, email, phone: number, name }]);
 
       if (!profileError) {
         alert("Signup successful! Please log in.");
         router.push("/login");
+      } else {
+        alert(profileError.message || "Profile creation failed");
       }
     } else {
-      alert("Error signing up");
+      alert(error?.message || "Signup failed");
     }
   };
 
@@ -38,7 +41,7 @@ export default function Page() {
     <div className="w-full h-screen flex flex-1">
       <div className="flex-[0.5] w-full h-full bg-ws-green-200 flex items-center justify-center">
         <div>
-          <Image src={"/logo.png"} width={"200"} height={"200"} alt="Logo" />
+          <Image src={"/logo.png"} width={200} height={200} alt="Logo" />
         </div>
       </div>
 
@@ -68,6 +71,16 @@ export default function Page() {
           >
             Sign up
           </button>
+
+          <p className="mt-4 text-sm">
+            Already have an account?{" "}
+            <span
+              className="text-ws-green-200 cursor-pointer underline"
+              onClick={() => router.push("/login")}
+            >
+              Login
+            </span>
+          </p>
         </div>
       </div>
     </div>

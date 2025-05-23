@@ -1,9 +1,9 @@
 "use client";
 
-import PassInput from "@/components/inputs/PassInput";
-import TextInput from "@/components/inputs/TextInput";
-import { AuthProvider, useAuthContext } from "@/context/authContext";
-import { supabase } from "@/lib/supabaseClient";
+import PassInput from "../../components/inputs/PassInput";
+import TextInput from "../../components/inputs/TextInput";
+import { useAuthContext } from "../../context/authContext";
+import { supabase } from "../../lib/supabaseClient";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -25,12 +25,9 @@ export default function Page() {
         id: data.user.id,
         email: data.user.email,
       });
-    }
-
-    if (!error) {
       router.push("/");
     } else {
-      alert(error);
+      alert(error?.message || "Login failed");
     }
   };
 
@@ -38,7 +35,7 @@ export default function Page() {
     <div className="w-full h-screen flex flex-1">
       <div className="flex-[0.5] w-full h-full bg-ws-green-200 flex items-center justify-center">
         <div>
-          <Image src={"/logo.png"} width={"200"} height={"200"} alt="Logo" />
+          <Image src={"/logo.png"} width={200} height={200} alt="Logo" />
         </div>
       </div>
 
@@ -62,6 +59,16 @@ export default function Page() {
           >
             Login
           </button>
+
+          <p className="mt-4 text-sm">
+            {`Don't have an account?`}
+            <span
+              className="text-ws-green-200 cursor-pointer underline"
+              onClick={() => router.push("/signup")}
+            >
+              Sign up
+            </span>
+          </p>
         </div>
       </div>
     </div>
