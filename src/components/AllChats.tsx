@@ -1,3 +1,5 @@
+/* eslint-disable react-hooks/exhaustive-deps */
+/* eslint-disable @typescript-eslint/no-unused-expressions */
 "use client";
 
 import { Icon } from "@iconify/react/dist/iconify.js";
@@ -298,45 +300,7 @@ const AllChats = ({
     return () => {
       supabase.removeChannel(labelSubscription);
     };
-  }, [user?.id, refetch]);
-
-  useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      if (tab2SearchQuery.trim()) {
-        fetchNewSearchPersons(tab2SearchQuery);
-      } else {
-        setNewSearchPersons([]);
-      }
-    }, 500);
-
-    return () => {
-      clearTimeout(timeoutId);
-    };
-  }, [tab2SearchQuery]);
-
-  useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      if (tab1SearchQuery.trim()) {
-        const onlyNames = temp_persons.map((person) => person.name);
-
-        const filteredNames = filter(tab1SearchQuery, onlyNames).map(
-          (r) => r.string
-        );
-
-        const results = temp_persons.filter((person) =>
-          filteredNames.includes(person.name)
-        );
-
-        setPersons(results);
-      } else {
-        setPersons([...temp_persons]);
-      }
-    }, 500);
-
-    return () => {
-      clearTimeout(timeoutId);
-    };
-  }, [tab1SearchQuery]);
+  }, [user?.id, refetch, getPersons]);
 
   const fetchNewSearchPersons = async (phoneNumber: string) => {
     if (!user?.id) return;
@@ -366,6 +330,39 @@ const AllChats = ({
   };
 
   useEffect(() => {
+    const id = setTimeout(() => {
+      tab2SearchQuery.trim()
+        ? fetchNewSearchPersons(tab2SearchQuery)
+        : setNewSearchPersons([]);
+    }, 500);
+    return () => clearTimeout(id);
+  }, [tab2SearchQuery, fetchNewSearchPersons]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (tab1SearchQuery.trim()) {
+        const onlyNames = temp_persons.map((person) => person.name);
+
+        const filteredNames = filter(tab1SearchQuery, onlyNames).map(
+          (r) => r.string
+        );
+
+        const results = temp_persons.filter((person) =>
+          filteredNames.includes(person.name)
+        );
+
+        setPersons(results);
+      } else {
+        setPersons([...temp_persons]);
+      }
+    }, 500);
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [tab1SearchQuery]);
+
+  useEffect(() => {
     const containerElement = containerRef.current;
     if (!containerElement) return;
 
@@ -376,9 +373,9 @@ const AllChats = ({
   }, [currentTab]);
 
   useEffect(() => {
-    //@ts-ignore
+    //@ts-expect-error https
     if (refetch && refetch.type === "UPDATE_LABELS") {
-      //@ts-ignore
+      //@ts-expect-error https
       const { chat_partner_id, labels, tempId } = refetch;
       setPersons((prev) =>
         prev.map((person) =>
@@ -392,9 +389,9 @@ const AllChats = ({
           ? { ...person, labels, tempId }
           : person
       );
-      //@ts-ignore
+      //@ts-expect-error https
     } else if (refetch && refetch.type === "REVERT_LABELS") {
-      //@ts-ignore
+      //@ts-expect-error https
       const { chat_partner_id, tempId } = refetch;
       const fetchLabels = async () => {
         const { data, error } = await supabase
@@ -420,14 +417,14 @@ const AllChats = ({
 
         setPersons((prev) =>
           prev.map((person) =>
-            //@ts-ignore
+            //@ts-expect-error https
             person.person_id === chat_partner_id && person.tempId === tempId
               ? { ...person, labels: parsedLabels, tempId: undefined }
               : person
           )
         );
         temp_persons = temp_persons.map((person) =>
-          //@ts-ignore
+          //@ts-expect-error https
           person.person_id === chat_partner_id && person.tempId === tempId
             ? { ...person, labels: parsedLabels, tempId: undefined }
             : person

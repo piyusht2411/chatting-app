@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 "use client";
 
 import { useAuthContext } from "@/context/authContext";
@@ -372,7 +373,7 @@ const ChatWindow = ({
             del(`pendingLabels_${user.id}_${currentChatPersonId}`);
 
             // Trigger refetch to update AllChats
-            //@ts-ignore
+            //@ts-expect-error https
             triggerRefetch({
               type: "UPDATE_LABELS",
               chat_partner_id: currentChatPersonId,
@@ -555,7 +556,7 @@ const ChatWindow = ({
     await set(pendingLabelsKey, pendingLabels);
 
     // Notify AllChats to update labels optimistically
-    //@ts-ignore
+    //@ts-expect-error https
     triggerRefetch({
       type: "UPDATE_LABELS",
       chat_partner_id: currentChatPersonId,
@@ -587,7 +588,7 @@ const ChatWindow = ({
 
       // Real-time subscription will handle updating selectedLabels and AllChats
     } catch (error) {
-      //@ts-ignore
+      //@ts-expect-error https
       console.error("Error adding labels:", error.message || error);
 
       // Revert UI changes
@@ -597,7 +598,7 @@ const ChatWindow = ({
       await del(pendingLabelsKey);
 
       // Notify AllChats to revert labels
-      //@ts-ignore
+      //@ts-expect-error https
       triggerRefetch({
         type: "REVERT_LABELS",
         chat_partner_id: currentChatPersonId,
