@@ -8,6 +8,7 @@ import { useAuthContext } from "@/context/authContext";
 import { useRefetch } from "@/context/refetchContext";
 import { filter } from "fuzzy";
 import { formatToDate } from "@/utils/formatTime";
+import { get, set, del } from "idb-keyval";
 
 type LABEL_TYPE = {
   id: string;
@@ -42,7 +43,6 @@ const SingleChatBox = ({
         chatInfo.person_id == currentChatPersonId && "bg-gray-100"
       } `}
     >
-      {/* User profile */}
       <div>
         <div className="p-3 rounded-full bg-neutral-300">
           <Icon
@@ -55,7 +55,6 @@ const SingleChatBox = ({
       </div>
 
       <div className="w-full flex flex-col">
-        {/* Name and labels or tags */}
         <div className="w-full flex items-center justify-between">
           <p className="text-black font-bold text-sm">
             {chatInfo.name || "Unknown User"}
@@ -78,7 +77,6 @@ const SingleChatBox = ({
           </div>
         </div>
 
-        {/* message, notification count */}
         <div className="w-full flex items-center flex-1 justify-between">
           <div className="w-full flex-[0.8]">
             <p className="text-neutral-400 text-xs line-clamp-1">
@@ -102,7 +100,6 @@ const SingleChatBox = ({
           </div>
         </div>
 
-        {/* Number's and timing */}
         <div className="w-full flex items-center justify-between mt-1">
           <div className="px-2 py-1 text-neutral-500 bg-neutral-100 rounded-md flex items-center space-x-1">
             <Icon icon={"ion:call-outline"} width={"8"} height={"8"} />
@@ -119,7 +116,7 @@ const SingleChatBox = ({
 };
 
 let temp_persons: CHAT_INFO[] = [];
-// Component to list all the chats
+
 const AllChats = ({
   setCurrentChatPersonId,
   currentChatPersonId,
@@ -131,20 +128,14 @@ const AllChats = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const { user } = useAuthContext();
   const [persons, setPersons] = useState<CHAT_INFO[]>([]);
-
   const [newSearchPersons, setNewSearchPersons] = useState<CHAT_INFO[]>([]);
-
   const [tab1SearchQuery, setTab1SearchQuery] = useState<string>("");
   const [tab2SearchQuery, setTab2SearchQuery] = useState<string>("");
-
   const [isSearchbarOpen, setIsSearchbarOpen] = useState<boolean>(false);
-
   const [isFilterOn, setIsFilterOn] = useState<boolean>(false);
-
-  const { refetch } = useRefetch();
+  const { refetch, triggerRefetch } = useRefetch();
 
   const getPersons = async () => {
-    // Query to get the persons you've sent messages to, with the latest message and their details
     const { data: messagesData, error: messageError } = await supabase.rpc(
       "get_latest_messages",
       { user_id: user?.id }
@@ -155,7 +146,6 @@ const AllChats = ({
       return;
     }
 
-    // Group messages by chat partner (person_id)
     const groupedMessages = messagesData.reduce((acc: any, message: any) => {
       const personId =
         message.sender_id === user?.id
@@ -177,10 +167,8 @@ const AllChats = ({
       return acc;
     }, {});
 
-    // Get all unique person IDs to fetch their profiles
     const personIds = Object.keys(groupedMessages);
 
-    // Fetch profiles for all chat partners
     const { data: profilesData, error: profilesError } = await supabase
       .from("profiles")
       .select("id, name, phone")
@@ -191,7 +179,6 @@ const AllChats = ({
       return;
     }
 
-    // Create a mapping of person_id to profile data
     const profileMap = profilesData.reduce((acc: any, profile: any) => {
       acc[profile.id] = {
         name: profile.name,
@@ -202,12 +189,7 @@ const AllChats = ({
 
     const { data: labelData, error: labelError } = await supabase
       .from("chat_labels")
-      .select(
-        `
-         chat_partner_id,
-         label_name
-        `
-      )
+      .select("chat_partner_id, label_name")
       .eq("user_id", user?.id);
 
     if (labelError) {
@@ -215,32 +197,43 @@ const AllChats = ({
       return;
     }
 
-    // Convert grouped messages to CHAT_INFO format with the latest message
-    const formattedPersonsData: CHAT_INFO[] = Object.values(
-      groupedMessages
-    ).map((group: any) => {
-      // Sort messages by created_at to get the latest one
-      const latestMessage = group.messages.sort(
-        (a: any, b: any) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      )[0];
+    const formattedPersonsData: CHAT_INFO[] = await Promise.all(
+      Object.values(groupedMessages).map(async (group: any) => {
+        const latestMessage = group.messages.sort(
+          (a: any, b: any) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        )[0];
 
-      const profile = profileMap[group.person_id] || {};
+        const profile = profileMap[group.person_id] || {};
 
-      return {
-        person_id: group.person_id,
-        name: profile.name || "Unknown User",
-        phone: profile.phone || "N/A",
-        latest_message: latestMessage.content,
-        latest_message_timestamp: latestMessage.created_at,
-        labels:
+        // Load pending labels from IndexedDB
+        const pendingLabels =
+          (await get(`pendingLabels_${user?.id}_${group.person_id}`)) || [];
+
+        const serverLabels =
           labelData
             .find((data: any) => data.chat_partner_id === group.person_id)
-            ?.label_name?.map(JSON.parse) || [],
-      };
-    });
+            ?.label_name?.map((label: any) =>
+              typeof label === "string" ? JSON.parse(label) : label
+            ) || [];
 
-    // Sort by latest message timestamp (optional, for better UX)
+        return {
+          person_id: group.person_id,
+          name: profile.name || "Unknown User",
+          phone: profile.phone || "N/A",
+          latest_message: latestMessage.content,
+          latest_message_timestamp: latestMessage.created_at,
+          labels: [
+            ...serverLabels,
+            ...pendingLabels.filter(
+              (pl: LABEL_TYPE) =>
+                !serverLabels.some((sl: LABEL_TYPE) => sl.id === pl.id)
+            ),
+          ],
+        };
+      })
+    );
+
     formattedPersonsData.sort(
       (a, b) =>
         new Date(b.latest_message_timestamp).getTime() -
@@ -255,9 +248,58 @@ const AllChats = ({
     if (!user) return;
 
     getPersons();
+
+    // Real-time subscription for chat_labels
+    const labelSubscription = supabase
+      .channel("realtime-all-chat-labels")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "chat_labels",
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          if (
+            payload.eventType === "INSERT" ||
+            payload.eventType === "UPDATE"
+          ) {
+            const { chat_partner_id, label_name } = payload.new;
+            const parsedLabels: LABEL_TYPE[] = label_name
+              .map((label: any) =>
+                typeof label === "string" ? JSON.parse(label) : label
+              )
+              .filter(
+                (label: any) =>
+                  label && label.id && label.label_name && label.color
+              );
+
+            setPersons((prev) =>
+              prev.map((person) =>
+                person.person_id === chat_partner_id
+                  ? { ...person, labels: parsedLabels }
+                  : person
+              )
+            );
+            temp_persons = temp_persons.map((person) =>
+              person.person_id === chat_partner_id
+                ? { ...person, labels: parsedLabels }
+                : person
+            );
+
+            // Remove pending labels for this chat_partner_id
+            del(`pendingLabels_${user.id}_${chat_partner_id}`);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(labelSubscription);
+    };
   }, [user?.id, refetch]);
 
-  // Debounced search function for tab2 search
   useEffect(() => {
     const timeoutId = setTimeout(() => {
       if (tab2SearchQuery.trim()) {
@@ -265,14 +307,13 @@ const AllChats = ({
       } else {
         setNewSearchPersons([]);
       }
-    }, 500); // Debounce delay
+    }, 500);
 
     return () => {
-      clearTimeout(timeoutId); // Clear timeout if input changes
+      clearTimeout(timeoutId);
     };
   }, [tab2SearchQuery]);
 
-  // Debounced search function for tab1 search
   useEffect(() => {
     const timeoutId = setTimeout(() => {
       if (tab1SearchQuery.trim()) {
@@ -290,20 +331,20 @@ const AllChats = ({
       } else {
         setPersons([...temp_persons]);
       }
-    }, 500); // Debounce delay
+    }, 500);
 
     return () => {
-      clearTimeout(timeoutId); // Clear timeout if input changes
+      clearTimeout(timeoutId);
     };
   }, [tab1SearchQuery]);
 
   const fetchNewSearchPersons = async (phoneNumber: string) => {
-    if (!user?.id) return; // Prevent query if user id is not available
+    if (!user?.id) return;
 
     const { data, error } = await supabase
       .from("profiles")
       .select("*")
-      .ilike("phone", `%${phoneNumber}%`) // partial search
+      .ilike("phone", `%${phoneNumber}%`)
       .neq("id", user?.id);
 
     if (error) {
@@ -334,13 +375,78 @@ const AllChats = ({
     });
   }, [currentTab]);
 
+  useEffect(() => {
+    //@ts-ignore
+    if (refetch && refetch.type === "UPDATE_LABELS") {
+      //@ts-ignore
+      const { chat_partner_id, labels, tempId } = refetch;
+      setPersons((prev) =>
+        prev.map((person) =>
+          person.person_id === chat_partner_id
+            ? { ...person, labels, tempId }
+            : person
+        )
+      );
+      temp_persons = temp_persons.map((person) =>
+        person.person_id === chat_partner_id
+          ? { ...person, labels, tempId }
+          : person
+      );
+      //@ts-ignore
+    } else if (refetch && refetch.type === "REVERT_LABELS") {
+      //@ts-ignore
+      const { chat_partner_id, tempId } = refetch;
+      const fetchLabels = async () => {
+        const { data, error } = await supabase
+          .from("chat_labels")
+          .select("chat_partner_id, label_name")
+          .eq("user_id", user?.id)
+          .eq("chat_partner_id", chat_partner_id);
+
+        if (error) {
+          console.error("Error fetching labels for revert:", error);
+          return;
+        }
+
+        const parsedLabels: LABEL_TYPE[] =
+          data[0]?.label_name
+            ?.map((label: any) =>
+              typeof label === "string" ? JSON.parse(label) : label
+            )
+            .filter(
+              (label: any) =>
+                label && label.id && label.label_name && label.color
+            ) || [];
+
+        setPersons((prev) =>
+          prev.map((person) =>
+            //@ts-ignore
+            person.person_id === chat_partner_id && person.tempId === tempId
+              ? { ...person, labels: parsedLabels, tempId: undefined }
+              : person
+          )
+        );
+        temp_persons = temp_persons.map((person) =>
+          //@ts-ignore
+          person.person_id === chat_partner_id && person.tempId === tempId
+            ? { ...person, labels: parsedLabels, tempId: undefined }
+            : person
+        );
+
+        await del(`pendingLabels_${user?.id}_${chat_partner_id}`);
+      };
+      fetchLabels();
+    } else {
+      getPersons();
+    }
+  }, [refetch, user?.id]);
+
   return (
     <div
       ref={containerRef}
       className="w-full h-full flex scrollbar-hide overflow-x-hidden"
     >
       <div className="w-full h-full flex flex-col shrink-0 min-h-0">
-        {/* header component */}
         <header className="w-full h-full flex-[0.07] bg-neutral-100 border-b border-ws-green-50 flex items-center justify-between px-2">
           {isSearchbarOpen ? (
             <>
@@ -371,7 +477,6 @@ const AllChats = ({
             </>
           ) : (
             <>
-              {/* Left section */}
               <div className="flex items-center space-x-2">
                 <button className="flex items-center space-x-1 text-ws-green-400 cursor-pointer">
                   <Icon
@@ -385,7 +490,6 @@ const AllChats = ({
                 <BorderButton text="Save" type={BUTTON_CONTENT.TEXT} />
               </div>
 
-              {/* Right section */}
               <div className="flex items-center space-x-2">
                 <BorderButton
                   onClickFunc={() => {
@@ -435,7 +539,6 @@ const AllChats = ({
         </header>
 
         <div className="w-full h-full flex-[0.93] flex flex-col min-h-0 relative">
-          {/* Overlay start new chat button */}
           <div
             onClick={() => {
               setCurrentTab(1);
@@ -450,7 +553,6 @@ const AllChats = ({
             />
           </div>
 
-          {/* All chats would be here */}
           <div className="w-full flex-1 overflow-y-auto custom-scrollbar min-h-0 pb-20">
             {persons.length === 0 && (
               <div className="w-full h-full flex items-center justify-center">
@@ -470,7 +572,6 @@ const AllChats = ({
         </div>
       </div>
 
-      {/* Start new message section */}
       <div className="w-full h-full flex flex-col shrink-0 min-h-0">
         <header className="w-full h-full flex-[0.07] bg-neutral-100 border-b border-ws-green-50 items-center justify-between px-2">
           <div className="w-full h-full flex items-center">
