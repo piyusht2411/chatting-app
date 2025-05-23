@@ -7,6 +7,7 @@ import { formatToOnlyTime } from "@/utils/formatTime";
 import { Icon } from "@iconify/react/dist/iconify.js";
 import React, { useEffect, useRef, useState } from "react";
 import Modal from "./Modal";
+import { get, set, del } from "idb-keyval";
 
 enum MESSAGE_TYPES {
   SENT = "SENT",
@@ -24,6 +25,7 @@ type CHAT_INFO_TYPE = {
   createdAt: string;
   number: string;
   replied_id: string;
+  isPending?: boolean;
 };
 
 const MessageBox = ({
@@ -53,7 +55,9 @@ const MessageBox = ({
             chatInfo.type == MESSAGE_TYPES.SENT
               ? "bg-ws-green-100 rounded-l-lg"
               : "bg-white rounded-r-lg"
-          } px-3 py-2  rounded-b-lg min-w-60 flex flex-col max-w-96 space-y-2 shadow-md`}
+          } px-3 py-2 rounded-b-lg min-w-60 flex flex-col max-w-96 space-y-2 shadow-md ${
+            chatInfo.isPending ? "opacity-50" : ""
+          }`}
         >
           {repliedchatInfo && (
             <div className="text-sm bg-gray-200 w-full">
@@ -77,12 +81,20 @@ const MessageBox = ({
                 {formatToOnlyTime(chatInfo.createdAt)}
               </p>
 
-              {chatInfo.type == MESSAGE_TYPES.SENT && (
+              {chatInfo.type == MESSAGE_TYPES.SENT && !chatInfo.isPending && (
                 <Icon
                   icon={"charm:tick-double"}
                   width={"14"}
                   height={"14"}
                   className="text-blue-500"
+                />
+              )}
+              {chatInfo.isPending && (
+                <Icon
+                  icon={"mdi:clock-outline"}
+                  width={"14"}
+                  height={"14"}
+                  className="text-gray-400"
                 />
               )}
             </div>
@@ -111,36 +123,170 @@ const ChatWindow = ({
   >(undefined);
 
   const { user } = useAuthContext();
-
   const [message, setMessage] = useState<string>("");
-
   const chatWindowRef = useRef<HTMLDivElement>(null);
-
   const [isChatOverlayButtonsVisible, setIsChatOverlayButtonsVisible] =
     useState<boolean>(false);
-
   const [isLabelModalOpen, setIsLabelModalOpen] = useState<boolean>(false);
-
-  const sendMessage = async () => {
-    if (!message) return;
-
-    await supabase.from("messages").insert([
-      {
-        sender_id: user?.id,
-        receiver_id: currentChatPersonId,
-        content: message,
-        replied_id: currentSelectedMessageId ? currentSelectedMessageId : null,
-      },
-    ]);
-
-    setMessage("");
-  };
-
   const [currentSelectedMessageId, setCurrentSelectedMessageId] =
     useState<string>("");
-
   const [isScrollToBBVisible, setIsScrollToBBVisible] =
     useState<boolean>(false);
+  const { triggerRefetch } = useRefetch();
+
+  // Load pending messages from IndexedDB on mount
+  useEffect(() => {
+    const loadPendingMessages = async () => {
+      const pendingMessages = await get(
+        `pendingMessages_${currentChatPersonId}`
+      );
+      if (pendingMessages) {
+        setChatHistory((prev) => [...prev, ...pendingMessages]);
+      }
+    };
+    if (currentChatPersonId) {
+      loadPendingMessages();
+    }
+  }, [currentChatPersonId]);
+
+  const sendMessage = async () => {
+    if (!message || !user || !currentChatPersonId) return;
+
+    // Create a temporary message with a unique ID
+    const tempId = `temp_${Date.now()}_${Math.random()}`;
+    const tempMessage: CHAT_INFO_TYPE = {
+      id: tempId,
+      type: MESSAGE_TYPES.SENT,
+      name: user.name || "",
+      content: message,
+      sender_id: user.id,
+      receiver_id: currentChatPersonId,
+      is_read: false,
+      createdAt: new Date().toISOString(),
+      number: user.phone || "",
+      replied_id: currentSelectedMessageId || "",
+      isPending: true,
+    };
+
+    // Optimistic update: Add the message to the UI immediately
+    setChatHistory((prev) => [...prev, tempMessage]);
+
+    // Save the pending message to IndexedDB
+    const pendingMessagesKey = `pendingMessages_${currentChatPersonId}`;
+    const existingPendingMessages = (await get(pendingMessagesKey)) || [];
+    await set(pendingMessagesKey, [...existingPendingMessages, tempMessage]);
+
+    // Scroll to the bottom
+    chatWindowRef.current?.scrollTo({
+      behavior: "smooth",
+      top: chatWindowRef.current.scrollHeight,
+    });
+
+    // Clear the input
+    setMessage("");
+    setCurrentSelectedMessageId("");
+
+    // Send the message to Supabase and return the inserted row
+    try {
+      const { data: newMessage, error } = await supabase
+        .from("messages")
+        .insert([
+          {
+            sender_id: user.id,
+            receiver_id: currentChatPersonId,
+            content: message,
+            replied_id: currentSelectedMessageId || null,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Format the server message
+      const formattedMessage: CHAT_INFO_TYPE = {
+        id: newMessage.id,
+        type: MESSAGE_TYPES.SENT,
+        name: user.name || "",
+        content: newMessage.content,
+        sender_id: newMessage.sender_id,
+        receiver_id: newMessage.receiver_id,
+        is_read: newMessage.is_read,
+        createdAt: newMessage.created_at,
+        number: user.phone || "",
+        replied_id: newMessage.replied_id || "",
+        isPending: false,
+      };
+
+      // Replace the temporary message with the server message
+      setChatHistory((prev) =>
+        prev.map((msg) => (msg.id === tempId ? formattedMessage : msg))
+      );
+
+      // Remove the pending message from IndexedDB
+      const updatedPendingMessages = (
+        (await get(pendingMessagesKey)) || []
+      ).filter((msg: CHAT_INFO_TYPE) => msg.id !== tempId);
+      if (updatedPendingMessages.length > 0) {
+        await set(pendingMessagesKey, updatedPendingMessages);
+      } else {
+        await del(pendingMessagesKey);
+      }
+
+      // Trigger refetch for the sidebar
+      triggerRefetch();
+    } catch (error) {
+      console.error("Error sending message:", error);
+
+      // On failure, remove the message from the UI
+      setChatHistory((prev) => prev.filter((msg) => msg.id !== tempId));
+
+      // Remove from IndexedDB
+      const updatedPendingMessages = (
+        (await get(pendingMessagesKey)) || []
+      ).filter((msg: CHAT_INFO_TYPE) => msg.id !== tempId);
+      if (updatedPendingMessages.length > 0) {
+        await set(pendingMessagesKey, updatedPendingMessages);
+      } else {
+        await del(pendingMessagesKey);
+      }
+
+      alert("Failed to send message. Please try again.");
+    }
+  };
+
+  const fetchChatHistory = async () => {
+    if (!user || !profileInfo) return;
+
+    const { data } = await supabase
+      .from("messages")
+      .select("*")
+      .or(
+        `and(sender_id.eq.${user?.id},receiver_id.eq.${currentChatPersonId}),and(sender_id.eq.${currentChatPersonId},receiver_id.eq.${user.id})`
+      )
+      .order("created_at", { ascending: true });
+
+    if (data) {
+      const formattedData: CHAT_INFO_TYPE[] = data.map((d) => ({
+        id: d.id,
+        content: d.content,
+        is_read: d.is_read,
+        createdAt: d.created_at,
+        sender_id: d.sender_id,
+        receiver_id: d.receiver_id,
+        name: d.sender_id == user.id ? user.name || "" : profileInfo.name,
+        number: d.sender_id == user.id ? user.phone || "" : profileInfo.phone,
+        type:
+          d.sender_id == user.id ? MESSAGE_TYPES.SENT : MESSAGE_TYPES.RECEIVED,
+        replied_id: d.replied_id,
+      }));
+
+      // Merge with pending messages from IndexedDB
+      const pendingMessages =
+        (await get(`pendingMessages_${currentChatPersonId}`)) || [];
+      setChatHistory([...formattedData, ...pendingMessages]);
+    }
+  };
 
   useEffect(() => {
     const chatWindowElement = chatWindowRef.current;
@@ -162,48 +308,6 @@ const ChatWindow = ({
     };
   }, [currentChatPersonId]);
 
-  const { triggerRefetch } = useRefetch();
-
-  const fetchChatHistory = async () => {
-    if (!user || !profileInfo) return;
-
-    const { data } = await supabase
-      .from("messages")
-      .select("*")
-      .or(
-        `and(sender_id.eq.${user?.id},receiver_id.eq.${currentChatPersonId}),and(sender_id.eq.${currentChatPersonId},receiver_id.eq.${user.id})`
-      )
-      .order("created_at", { ascending: true });
-
-    if (data) {
-      const formattedData: CHAT_INFO_TYPE[] = data.map((d) => ({
-        id: d.id,
-        content: d.content,
-        is_read: d.is_read,
-        createdAt: d.created_at,
-        sender_id: d.sender_id,
-        receiver_id: d.receiver_id,
-        name:
-          d.sender_id == user.id
-            ? user.name
-              ? user.name
-              : ""
-            : profileInfo.name,
-        number:
-          d.sender_id == user.id
-            ? user.phone
-              ? user.phone
-              : ""
-            : profileInfo.phone,
-        type:
-          d.sender_id == user.id ? MESSAGE_TYPES.SENT : MESSAGE_TYPES.RECEIVED,
-        replied_id: d.replied_id,
-      }));
-
-      setChatHistory(formattedData);
-    }
-  };
-
   useEffect(() => {
     if (!user || !currentChatPersonId || !profileInfo) return;
 
@@ -221,38 +325,40 @@ const ChatWindow = ({
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "messages" },
         (payload) => {
+          const newMessage = payload.new;
           const formattedData: CHAT_INFO_TYPE = {
-            id: payload.new.id,
-            content: payload.new.content,
-            is_read: payload.new.is_read,
-            createdAt: payload.new.createdAt,
-            sender_id: payload.new.sender_id,
-            receiver_id: payload.new.receiver_id,
+            id: newMessage.id,
+            content: newMessage.content,
+            is_read: newMessage.is_read,
+            createdAt: newMessage.created_at,
+            sender_id: newMessage.sender_id,
+            receiver_id: newMessage.receiver_id,
             name:
-              payload.new.sender_id == user.id
-                ? user.name
-                  ? user.name
-                  : ""
+              newMessage.sender_id == user.id
+                ? user.name || ""
                 : profileInfo.name,
             number:
-              payload.new.sender_id == user.id
-                ? user.phone
-                  ? user.phone
-                  : ""
+              newMessage.sender_id == user.id
+                ? user.phone || ""
                 : profileInfo.phone,
             type:
-              payload.new.sender_id == user.id
+              newMessage.sender_id == user.id
                 ? MESSAGE_TYPES.SENT
                 : MESSAGE_TYPES.RECEIVED,
-            replied_id: payload.new.replied_id,
+            replied_id: newMessage.replied_id,
           };
 
-          setChatHistory((prev) => [...prev, formattedData]);
+          // Only add the message if it's not already in the chat history (e.g., from the user's own send)
+          setChatHistory((prev) => {
+            if (prev.some((msg) => msg.id === newMessage.id)) {
+              return prev;
+            }
+            return [...prev, formattedData];
+          });
 
           triggerRefetch();
 
           const chatWindowElement = chatWindowRef.current;
-
           chatWindowElement?.scrollTo({
             behavior: "smooth",
             top: chatWindowElement.scrollHeight + 400,
@@ -274,6 +380,7 @@ const ChatWindow = ({
       .maybeSingle();
 
     if (error) {
+      console.error("Error fetching profile:", error);
       return;
     }
 
@@ -298,7 +405,7 @@ const ChatWindow = ({
   const fetchLabels = async () => {
     const { data, error } = await supabase
       .from("chat_label_separate")
-      .select("id, label_name, color"); // Select all labels with their details
+      .select("id, label_name, color");
 
     if (error) {
       console.error("Error fetching chat labels:", error.message);
@@ -320,6 +427,7 @@ const ChatWindow = ({
       .eq("chat_partner_id", currentChatPersonId);
 
     if (error) {
+      console.error("Error fetching selected labels:", error);
       return;
     } else {
       const labels = data[0]
@@ -340,7 +448,7 @@ const ChatWindow = ({
         {
           user_id: user?.id,
           chat_partner_id: currentChatPersonId,
-          label_name: selectedLabels, // New or updated labels array
+          label_name: selectedLabels,
         },
       ],
       { onConflict: "user_id, chat_partner_id" }
@@ -350,14 +458,13 @@ const ChatWindow = ({
       console.error("Error adding labels:", error);
     } else {
       setSelectedLabels([]);
-
       setIsLabelModalOpen(false);
     }
   };
 
   return (
     <div className="w-full h-full flex flex-1">
-      {/* Modal for displaying the add label diaglog */}
+      {/* Modal for displaying the add label dialog */}
       <Modal isOpen={isLabelModalOpen} setIsOpen={setIsLabelModalOpen}>
         <div
           className="w-[50%] h-[60%] bg-white rounded-lg p-4"
@@ -397,7 +504,6 @@ const ChatWindow = ({
                   const newLabels = selectedLabels.filter(
                     (label) => label.id != l.id
                   );
-
                   setSelectedLabels([...newLabels]);
                 }}
                 key={index}
@@ -497,7 +603,7 @@ const ChatWindow = ({
                     top: chatWindowRef.current.scrollHeight,
                   });
                 }}
-                className="bg-white w-14  h-fit py-1 rounded-sm cursor-pointer shadow-md flex justify-center"
+                className="bg-white w-14 h-fit py-1 rounded-sm cursor-pointer shadow-md flex justify-center"
               >
                 <Icon icon="mdi-light:arrow-down" width="20" height="20" />
               </div>
@@ -512,7 +618,7 @@ const ChatWindow = ({
             {chatHistory.map((chat, index) => (
               <MessageBox
                 chatInfo={chat}
-                key={index}
+                key={chat.id}
                 setCurrentSelectedId={setCurrentSelectedMessageId}
                 repliedchatInfo={chatHistory.find(
                   (c) => c.id == chat.replied_id
@@ -529,7 +635,7 @@ const ChatWindow = ({
           }`}
         >
           {currentSelectedMessageId && (
-            <div className=" z-50 bg-white">
+            <div className="z-50 bg-white">
               <MessageBox
                 chatInfo={
                   chatHistory.find(
@@ -627,8 +733,7 @@ const ChatWindow = ({
               <div>
                 <button className="flex items-center justify-between border border-neutral-200 rounded-md px-2 py-1 w-32">
                   <div className="flex items-center space-x-2">
-                    <div className="w-3 h-3 rounded-full bg-neutral-300"> </div>
-
+                    <div className="w-3 h-3 rounded-full bg-neutral-300"></div>
                     <p className="text-xs font-medium">{user?.name}</p>
                   </div>
 
@@ -671,7 +776,6 @@ const ChatWindow = ({
           />
           <Icon icon={"gg:menu-left"} width={"18"} height={"18"} />
           <Icon icon={"arcticons:dots"} width={"18"} height={"18"} />
-
           <Icon icon={"mdi:hubspot"} width={"18"} height={"18"} />
           <Icon
             icon={"fluent:people-team-24-filled"}
